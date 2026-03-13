@@ -1,0 +1,472 @@
+import pygame
+import sys
+import random
+import math
+import os
+
+# --- Initialization ---
+pygame.init()
+pygame.mixer.init()
+
+# --- Screen Setup (Fullscreen) ---
+screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+WIDTH, HEIGHT = screen.get_size()
+pygame.display.set_caption("Ultimate Tic-Tac-Toe")
+clock = pygame.time.Clock()
+FPS = 60
+
+# --- Colors ---
+GRID_COLOR = (100, 200, 255)
+TEXT_COLOR = (255, 255, 255)
+BTN_COLOR = (45, 60, 90)
+BTN_HOVER = (70, 90, 130)
+X_COLOR = (255, 100, 100)
+O_COLOR = (100, 255, 100)
+POPUP_BG = (30, 30, 50, 230)
+
+# 10 Different Background Colors
+BG_COLORS = [
+    (20, 25, 40),   # Dark Blue
+    (40, 20, 30),   # Dark Red/Pink
+    (20, 40, 30),   # Dark Green
+    (30, 40, 50),   # Slate Blue
+    (45, 25, 45),   # Dark Purple
+    (15, 35, 45),   # Teal
+    (40, 35, 20),   # Brown/Goldish
+    (25, 20, 45),   # Deep Indigo
+    (45, 20, 20),   # Crimson
+    (20, 45, 45)    # Dark Cyan
+]
+
+# Background transition variables
+current_bg_idx = 0
+target_bg_idx = random.randint(1, 9)
+bg_timer_start = pygame.time.get_ticks()
+BG_TRANSITION_TIME = 10000  # CHANGED to 10 seconds
+
+# --- Fonts ---
+font_large = pygame.font.SysFont("comicsansms", int(HEIGHT * 0.08), bold=True)
+font_med = pygame.font.SysFont("comicsansms", int(HEIGHT * 0.05))
+font_small = pygame.font.SysFont("comicsansms", int(HEIGHT * 0.03))
+
+# --- Global Game Variables ---
+state = "MAIN_MENU"
+game_mode = None
+difficulty = None
+max_rounds = 0
+scores = {'X': 0, 'O': 0}
+board = [' '] * 9
+round_starter = 'O'  # Will flip to 'X' on first setup
+current_player = 'X'
+winner = None
+music_on = True
+
+# --- Audio Setup ---
+script_dir = os.path.dirname(os.path.abspath(__file__))
+music_dir = os.path.join(script_dir, "music")
+
+music_files = []
+if os.path.exists(music_dir):
+    music_files = [os.path.join(music_dir, f) for f in os.listdir(music_dir) if f.endswith(('.mp3', '.wav', '.ogg'))]
+
+MUSIC_END_EVENT = pygame.USEREVENT + 1
+pygame.mixer.music.set_endevent(MUSIC_END_EVENT)
+
+def play_random_music():
+    if not music_on: return
+    if music_files:
+        pygame.mixer.music.load(random.choice(music_files))
+        pygame.mixer.music.play()
+
+play_random_music()
+
+# --- Animated Background ---
+class Particle:
+    def __init__(self):
+        self.x = random.randint(0, WIDTH)
+        self.y = random.randint(0, HEIGHT)
+        self.r = random.randint(2, 6)
+        self.dx = random.uniform(-1, 1)
+        self.dy = random.uniform(-1, 1)
+        # Setup for dynamic particle colors
+        self.color = [float(random.randint(100, 255)) for _ in range(3)]
+        self.target_color = [float(random.randint(100, 255)) for _ in range(3)]
+
+    def move(self):
+        self.x += self.dx
+        self.y += self.dy
+        if self.x < 0 or self.x > WIDTH: self.dx *= -1
+        if self.y < 0 or self.y > HEIGHT: self.dy *= -1
+        
+        # Smoothly shift the particle colors
+        for i in range(3):
+            if self.color[i] < self.target_color[i]:
+                self.color[i] += 0.5
+            elif self.color[i] > self.target_color[i]:
+                self.color[i] -= 0.5
+            
+            # Pick a new color target when reached
+            if abs(self.color[i] - self.target_color[i]) <= 0.5:
+                self.target_color[i] = float(random.randint(100, 255))
+
+    def draw(self, surface):
+        c = (int(self.color[0]), int(self.color[1]), int(self.color[2]))
+        pygame.draw.circle(surface, c, (int(self.x), int(self.y)), self.r)
+
+particles = [Particle() for _ in range(70)]
+
+# --- UI Components ---
+class Button:
+    def __init__(self, x, y, w, h, text, font, action=None, color=BTN_COLOR):
+        self.rect = pygame.Rect(x, y, w, h)
+        self.text = text
+        self.font = font
+        self.action = action
+        self.color = color
+
+    def draw(self, surface):
+        mouse_pos = pygame.mouse.get_pos()
+        is_hover = self.rect.collidepoint(mouse_pos)
+        color = BTN_HOVER if is_hover else self.color
+        
+        pygame.draw.rect(surface, color, self.rect, border_radius=15)
+        pygame.draw.rect(surface, TEXT_COLOR, self.rect, 2, border_radius=15)
+        
+        txt_surf = self.font.render(self.text, True, TEXT_COLOR)
+        txt_rect = txt_surf.get_rect(center=self.rect.center)
+        surface.blit(txt_surf, txt_rect)
+
+    def handle_event(self, event):
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            if self.rect.collidepoint(event.pos) and self.action:
+                self.action()
+
+# --- Game Logic Functions ---
+def reset_board():
+    global board, current_player, winner, round_starter
+    board = [' '] * 9
+    winner = None
+    round_starter = 'O' if round_starter == 'X' else 'X'
+    current_player = round_starter
+
+def full_reset():
+    global scores, round_starter
+    scores = {'X': 0, 'O': 0}
+    round_starter = 'O'
+    reset_board()
+
+def check_win(b, player):
+    win_cond = [(0,1,2), (3,4,5), (6,7,8), (0,3,6), (1,4,7), (2,5,8), (0,4,8), (2,4,6)]
+    return any(b[i] == b[j] == b[k] == player for i, j, k in win_cond)
+
+def check_draw(b):
+    return ' ' not in b
+
+# --- AI Logic ---
+def get_empty_spots(b):
+    return [i for i, spot in enumerate(b) if spot == ' ']
+
+def ai_move():
+    global board
+    empty = get_empty_spots(board)
+    if not empty: return
+
+    if difficulty == "EASY":
+        move = random.choice(empty)
+    elif difficulty == "MEDIUM":
+        move = -1
+        for i in empty: # Try Win
+            b_copy = board[:]
+            b_copy[i] = 'O'
+            if check_win(b_copy, 'O'): move = i; break
+        if move == -1: # Try Block
+            for i in empty:
+                b_copy = board[:]
+                b_copy[i] = 'X'
+                if check_win(b_copy, 'X'): move = i; break
+        if move == -1: move = random.choice(empty) # Random
+    else: # HARD
+        best_score = -math.inf
+        move = random.choice(empty)
+        for i in empty:
+            board[i] = 'O'
+            score = minimax(board, 0, False)
+            board[i] = ' '
+            if score > best_score:
+                best_score = score
+                move = i
+    
+    board[move] = 'O'
+    finalize_turn()
+
+def minimax(b, depth, is_maximizing):
+    if check_win(b, 'O'): return 10 - depth
+    if check_win(b, 'X'): return depth - 10
+    if check_draw(b): return 0
+
+    if is_maximizing:
+        best = -math.inf
+        for i in get_empty_spots(b):
+            b[i] = 'O'
+            best = max(best, minimax(b, depth + 1, False))
+            b[i] = ' '
+        return best
+    else:
+        best = math.inf
+        for i in get_empty_spots(b):
+            b[i] = 'X'
+            best = min(best, minimax(b, depth + 1, True))
+            b[i] = ' '
+        return best
+
+def finalize_turn():
+    global current_player, winner, scores, state
+    if check_win(board, current_player):
+        scores[current_player] += 1
+        if scores[current_player] >= max_rounds:
+            state = "GAME_OVER"
+        else:
+            # Show the winning move before resetting
+            draw_playing_state()
+            pygame.display.flip()
+            pygame.time.delay(1000) # Wait 1 second so players can see the move
+            reset_board()
+    elif check_draw(board):
+        # Show the final draw move before resetting
+        draw_playing_state()
+        pygame.display.flip()
+        pygame.time.delay(1000)
+        reset_board()
+    else:
+        current_player = 'O' if current_player == 'X' else 'X'
+
+# --- Button Actions ---
+def set_state_main(): global state; state = "MAIN_MENU"
+def set_state_mode(): global state; state = "MODE_SELECT"
+def set_state_diff_single(): global game_mode, state; game_mode = "SINGLE"; state = "DIFF_SELECT"
+def set_state_diff_multi(): global game_mode, state; game_mode = "MULTI"; state = "ROUND_SELECT"
+def set_diff_easy(): global difficulty, state; difficulty = "EASY"; state = "ROUND_SELECT"
+def set_diff_med(): global difficulty, state; difficulty = "MEDIUM"; state = "ROUND_SELECT"
+def set_diff_hard(): global difficulty, state; difficulty = "HARD"; state = "ROUND_SELECT"
+def set_rounds(r): global max_rounds, state; max_rounds = r; full_reset(); state = "PLAYING"
+def toggle_music(): 
+    global music_on
+    music_on = not music_on
+    if music_on: play_random_music()
+    else: pygame.mixer.music.stop()
+def quit_game(): pygame.quit(); sys.exit()
+def pause_game(): global state; state = "PAUSED"
+def resume_game(): global state; state = "PLAYING"
+def restart_game(): full_reset(); global state; state = "PLAYING"
+
+# --- Create Buttons ---
+bw, bh = int(WIDTH * 0.25), int(HEIGHT * 0.08)
+cx = WIDTH // 2 - bw // 2
+
+btn_start = Button(cx, HEIGHT * 0.4, bw, bh, "Start Game", font_med, set_state_mode)
+btn_quit = Button(cx, HEIGHT * 0.55, bw, bh, "Quit", font_med, quit_game)
+btn_music = Button(WIDTH - int(WIDTH*0.15) - 20, HEIGHT - int(HEIGHT*0.08) - 20, int(WIDTH*0.15), int(HEIGHT*0.08), "Music: ON", font_small, toggle_music)
+
+btn_single = Button(cx, HEIGHT * 0.4, bw, bh, "Single Player", font_med, set_state_diff_single)
+btn_multi = Button(cx, HEIGHT * 0.55, bw, bh, "Multiplayer", font_med, set_state_diff_multi)
+
+btn_easy = Button(cx, HEIGHT * 0.35, bw, bh, "Easy", font_med, set_diff_easy)
+btn_med = Button(cx, HEIGHT * 0.50, bw, bh, "Medium", font_med, set_diff_med)
+btn_hard = Button(cx, HEIGHT * 0.65, bw, bh, "Hard", font_med, set_diff_hard)
+
+btn_r5 = Button(cx, HEIGHT * 0.25, bw, bh, "5 Rounds", font_med, lambda: set_rounds(5))
+btn_r10 = Button(cx, HEIGHT * 0.40, bw, bh, "10 Rounds", font_med, lambda: set_rounds(10))
+btn_r15 = Button(cx, HEIGHT * 0.55, bw, bh, "15 Rounds", font_med, lambda: set_rounds(15))
+btn_r20 = Button(cx, HEIGHT * 0.70, bw, bh, "20 Rounds", font_med, lambda: set_rounds(20))
+
+btn_back = Button(20, 20, int(WIDTH*0.1), int(HEIGHT*0.06), "Back", font_small, set_state_main)
+btn_pause = Button(int(WIDTH*0.1) + 40, 20, int(WIDTH*0.1), int(HEIGHT*0.06), "Pause", font_small, pause_game)
+
+btn_resume = Button(cx, HEIGHT * 0.35, bw, bh, "Resume", font_med, resume_game)
+btn_restart = Button(cx, HEIGHT * 0.50, bw, bh, "Restart", font_med, restart_game)
+btn_pquit = Button(cx, HEIGHT * 0.65, bw, bh, "Main Menu", font_med, set_state_main)
+
+btn_replay = Button(cx - int(bw*0.6), HEIGHT * 0.6, int(bw*1.1), bh, "Replay", font_med, restart_game)
+btn_gmenu = Button(cx + int(bw*0.6), HEIGHT * 0.6, int(bw*1.1), bh, "Menu", font_med, set_state_main)
+
+# --- Draw Functions ---
+def draw_bg():
+    global current_bg_idx, target_bg_idx, bg_timer_start
+    
+    now = pygame.time.get_ticks()
+    progress = (now - bg_timer_start) / BG_TRANSITION_TIME
+    
+    if progress >= 1.0:
+        current_bg_idx = target_bg_idx
+        target_bg_idx = random.randint(0, 9)
+        bg_timer_start = now
+        progress = 0.0
+
+    c1 = BG_COLORS[current_bg_idx]
+    c2 = BG_COLORS[target_bg_idx]
+    
+    r = int(c1[0] + (c2[0] - c1[0]) * progress)
+    g = int(c1[1] + (c2[1] - c1[1]) * progress)
+    b = int(c1[2] + (c2[2] - c1[2]) * progress)
+    
+    screen.fill((r, g, b))
+    
+    for p in particles:
+        p.move()
+        p.draw(screen)
+
+def draw_grid():
+    grid_size = int(HEIGHT * 0.5)
+    start_x, start_y = WIDTH//2 - grid_size//2, HEIGHT//2 - grid_size//2
+    cell = grid_size // 3
+
+    pygame.draw.line(screen, GRID_COLOR, (start_x + cell, start_y), (start_x + cell, start_y + grid_size), 5)
+    pygame.draw.line(screen, GRID_COLOR, (start_x + cell*2, start_y), (start_x + cell*2, start_y + grid_size), 5)
+    pygame.draw.line(screen, GRID_COLOR, (start_x, start_y + cell), (start_x + grid_size, start_y + cell), 5)
+    pygame.draw.line(screen, GRID_COLOR, (start_x, start_y + cell*2), (start_x + grid_size, start_y + cell*2), 5)
+
+    for i, mark in enumerate(board):
+        x = start_x + (i % 3) * cell + cell // 2
+        y = start_y + (i // 3) * cell + cell // 2
+        if mark == 'X':
+            txt = font_large.render("X", True, X_COLOR)
+            screen.blit(txt, txt.get_rect(center=(x, y)))
+        elif mark == 'O':
+            txt = font_large.render("O", True, O_COLOR)
+            screen.blit(txt, txt.get_rect(center=(x, y)))
+
+def draw_scoreboard():
+    if game_mode == "SINGLE":
+        p1_text = f"Human (X): {scores['X']}"
+        p2_text = f"Computer (O): {scores['O']}"
+    else:
+        p1_text = f"Player 1 (X): {scores['X']}"
+        p2_text = f"Player 2 (O): {scores['O']}"
+
+    target_text = f"First to {max_rounds} wins!"
+
+    t1 = font_med.render(p1_text, True, X_COLOR)
+    t2 = font_med.render(p2_text, True, O_COLOR)
+    t3 = font_small.render(target_text, True, (200, 200, 200))
+
+    screen.blit(t1, (WIDTH//2 - int(WIDTH*0.3), HEIGHT - int(HEIGHT*0.15)))
+    screen.blit(t2, (WIDTH//2 + int(WIDTH*0.05), HEIGHT - int(HEIGHT*0.15)))
+    screen.blit(t3, (WIDTH//2 - t3.get_width()//2, HEIGHT - int(HEIGHT*0.07)))
+
+def draw_title(text, y=HEIGHT*0.15):
+    title = font_large.render(text, True, TEXT_COLOR)
+    screen.blit(title, title.get_rect(center=(WIDTH//2, int(y))))
+
+# Extracted drawing function for the active game view
+def draw_playing_state():
+    draw_bg()
+    btn_back.draw(screen)
+    btn_pause.draw(screen)
+    draw_grid()
+    draw_scoreboard()
+    turn_txt = f"Turn: {'Player 1 (X)' if current_player=='X' else 'Player 2 (O)' if game_mode=='MULTI' else 'Computer (O)'}"
+    screen.blit(font_small.render(turn_txt, True, TEXT_COLOR), (WIDTH//2 - int(WIDTH*0.08), 20))
+
+
+# --- Main Loop ---
+ai_timer = 0
+running = True
+while running:
+    draw_bg()
+    btn_music.text = "Music: ON" if music_on else "Music: OFF"
+
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            running = False
+            
+        if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+            running = False
+            
+        if event.type == MUSIC_END_EVENT:
+            play_random_music()
+
+        if state == "MAIN_MENU":
+            btn_start.handle_event(event); btn_quit.handle_event(event); btn_music.handle_event(event)
+        elif state == "MODE_SELECT":
+            btn_single.handle_event(event); btn_multi.handle_event(event); btn_back.handle_event(event)
+        elif state == "DIFF_SELECT":
+            btn_easy.handle_event(event); btn_med.handle_event(event); btn_hard.handle_event(event); btn_back.handle_event(event)
+        elif state == "ROUND_SELECT":
+            btn_r5.handle_event(event); btn_r10.handle_event(event); btn_r15.handle_event(event); btn_r20.handle_event(event); btn_back.handle_event(event)
+        elif state == "PLAYING":
+            btn_back.handle_event(event); btn_pause.handle_event(event)
+            
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                if current_player == 'X' or game_mode == "MULTI":
+                    grid_size = int(HEIGHT * 0.5)
+                    start_x, start_y = WIDTH//2 - grid_size//2, HEIGHT//2 - grid_size//2
+                    mx, my = event.pos
+                    if start_x < mx < start_x + grid_size and start_y < my < start_y + grid_size:
+                        col = int((mx - start_x) // (grid_size / 3))
+                        row = int((my - start_y) // (grid_size / 3))
+                        idx = row * 3 + col
+                        if board[idx] == ' ':
+                            board[idx] = current_player
+                            finalize_turn()
+                            if game_mode == "SINGLE" and state == "PLAYING":
+                                ai_timer = pygame.time.get_ticks()
+
+        elif state == "PAUSED":
+            btn_resume.handle_event(event); btn_restart.handle_event(event); btn_pquit.handle_event(event)
+        elif state == "GAME_OVER":
+            btn_replay.handle_event(event); btn_gmenu.handle_event(event)
+
+    # --- State Rendering & Logic ---
+    if state == "MAIN_MENU":
+        draw_title("TIC TAC TOE")
+        btn_start.draw(screen); btn_quit.draw(screen); btn_music.draw(screen)
+
+    elif state == "MODE_SELECT":
+        draw_title("Select Mode")
+        btn_single.draw(screen); btn_multi.draw(screen); btn_back.draw(screen)
+
+    elif state == "DIFF_SELECT":
+        draw_title("Difficulty")
+        btn_easy.draw(screen); btn_med.draw(screen); btn_hard.draw(screen); btn_back.draw(screen)
+
+    elif state == "ROUND_SELECT":
+        draw_title("Rounds to Win")
+        btn_r5.draw(screen); btn_r10.draw(screen); btn_r15.draw(screen); btn_r20.draw(screen); btn_back.draw(screen)
+
+    elif state == "PLAYING":
+        draw_playing_state() # Using the new helper function
+
+        # AI Turn trigger
+        if game_mode == "SINGLE" and current_player == 'O':
+            if pygame.time.get_ticks() - ai_timer > 600:
+                ai_move()
+
+    elif state == "PAUSED":
+        draw_grid()
+        overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+        overlay.fill(POPUP_BG)
+        screen.blit(overlay, (0,0))
+        draw_title("PAUSED", HEIGHT * 0.2)
+        btn_resume.draw(screen); btn_restart.draw(screen); btn_pquit.draw(screen)
+
+    elif state == "GAME_OVER":
+        draw_grid()
+        overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+        overlay.fill(POPUP_BG)
+        screen.blit(overlay, (0,0))
+        
+        winner_name = "Player 1 (X)" if scores['X'] == max_rounds else "Player 2 (O)"
+        if game_mode == "SINGLE":
+            winner_name = "Human (X)" if scores['X'] == max_rounds else "Computer (O)"
+            
+        draw_title("CONGRATULATIONS!", HEIGHT * 0.3)
+        w_txt = font_med.render(f"{winner_name} Won the Match!", True, (255,215,0))
+        screen.blit(w_txt, w_txt.get_rect(center=(WIDTH//2, HEIGHT * 0.45)))
+        
+        btn_replay.draw(screen); btn_gmenu.draw(screen)
+
+    pygame.display.flip()
+    clock.tick(FPS)
+
+pygame.quit()
+sys.exit()
